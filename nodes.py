@@ -16,6 +16,9 @@ import json
 import base64
 import urllib.request
 import urllib.error
+import urllib.parse
+import ssl
+import re
 from typing import Any
 from io import BytesIO
 import numpy as np
@@ -28,15 +31,75 @@ def _log(msg: str):
 
 
 def _safe_key(key: str) -> str:
-    k = key or ""
-    if len(k) <= 6:
-        return "***"
-    return f"{k[:3]}***{k[-3:]}"
+    """完全脱敏 API 密钥，不显示任何字符"""
+    return "***" if key else "empty"
 
 
 def _normalize_url(url: str) -> str:
-    """标准化 URL"""
-    return (url or "").strip().rstrip("/")
+    """标准化并验证 URL"""
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        return url
+    
+    # 验证 URL 格式
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ["https", "http"]:
+            raise ValueError("URL 必须使用 http 或 https 协议")
+        
+        # 防止 SSRF 攻击 - 禁止内网地址
+        hostname = parsed.hostname
+        if hostname:
+            hostname_lower = hostname.lower()
+            # 禁止 localhost 和内网 IP
+            if hostname_lower in ["localhost", "127.0.0.1", "0.0.0.0", "::1"]:
+                raise ValueError("禁止访问本地地址")
+            # 禁止内网 IP 段
+            if hostname_lower.startswith(("10.", "172.16.", "172.17.", "172.18.", "172.19.", 
+                                         "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+                                         "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                                         "172.30.", "172.31.", "192.168.")):
+                raise ValueError("禁止访问内网地址")
+        
+        return url
+    except Exception as e:
+        _log(f"URL 验证失败: {e}")
+        raise ValueError(f"无效的 URL: {e}")
+
+
+def _sanitize_input(text: str, max_length: int = 50000) -> str:
+    """清理和验证用户输入"""
+    if not text:
+        return ""
+    
+    text = text.strip()
+    
+    # 限制长度防止资源耗尽
+    if len(text) > max_length:
+        _log(f"输入过长，截断到 {max_length} 字符")
+        text = text[:max_length]
+    
+    return text
+
+
+def _validate_config(config: dict) -> bool:
+    """验证配置参数"""
+    if not config:
+        return False
+    
+    api_base = config.get("api_base", "")
+    api_key = config.get("api_key", "")
+    model = config.get("model", "")
+    
+    if not api_base or not api_key or not model:
+        return False
+    
+    # 验证 API key 不为空且长度合理
+    if len(api_key.strip()) < 10:
+        _log("警告: API key 长度过短")
+        return False
+    
+    return True
 
 
 def _headers(key: str) -> dict:
@@ -49,27 +112,84 @@ def _headers(key: str) -> dict:
 
 
 def _request(method: str, url: str, headers: dict, data: dict = None, timeout: int = 120) -> Any:
-    """HTTP 请求"""
-    body = json.dumps(data).encode() if data else None
+    """HTTP 请求 - 增强安全性"""
+    # 限制 payload 大小（10MB）
+    if data:
+        body = json.dumps(data).encode()
+        if len(body) > 10 * 1024 * 1024:
+            raise Exception("请求数据过大（超过 10MB）")
+    else:
+        body = None
+    
     req = urllib.request.Request(url, body, headers, method=method)
+    
+    # 创建 SSL 上下文，启用证书验证
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = True
+    ssl_context.verify_mode = ssl.CERT_REQUIRED
+    
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode())
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as r:
+            # 限制响应大小（50MB）
+            content_length = r.getheader('Content-Length')
+            if content_length and int(content_length) > 50 * 1024 * 1024:
+                raise Exception("响应数据过大（超过 50MB）")
+            
+            response_data = r.read()
+            if len(response_data) > 50 * 1024 * 1024:
+                raise Exception("响应数据过大（超过 50MB）")
+            
+            return json.loads(response_data.decode())
     except urllib.error.HTTPError as e:
+        # 不暴露详细错误信息
+        error_msg = f"HTTP 错误 {e.code}"
         try:
-            err = e.read().decode()
+            err_data = e.read().decode()
+            # 解析错误但不完整暴露
+            if len(err_data) < 500:
+                error_msg = f"HTTP {e.code}: 请求失败"
         except:
-            err = str(e.reason)
-        raise Exception(f"HTTP {e.code}: {err}")
+            pass
+        _log(f"HTTP 错误: {error_msg}")
+        raise Exception(error_msg)
+    except ssl.SSLError as e:
+        _log(f"SSL 错误: {str(e)}")
+        raise Exception("SSL 证书验证失败")
     except Exception as e:
-        raise Exception(str(e))
+        _log(f"请求异常: {str(e)}")
+        raise Exception("请求失败")
 
 
 def _download(url: str) -> bytes:
-    """下载二进制数据"""
+    """下载二进制数据 - 增强安全性"""
+    # 验证 URL
+    if not url or not url.startswith(("https://", "http://", "data:")):
+        raise ValueError("无效的下载 URL")
+    
+    # 如果是 data URL，直接解码
+    if url.startswith("data:"):
+        if "base64," in url:
+            return base64.b64decode(url.split("base64,", 1)[1])
+        raise ValueError("不支持的 data URL 格式")
+    
     req = urllib.request.Request(url, headers={"User-Agent": "ComfyUI"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read()
+    
+    # 创建 SSL 上下文
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = True
+    ssl_context.verify_mode = ssl.CERT_REQUIRED
+    
+    with urllib.request.urlopen(req, timeout=60, context=ssl_context) as r:
+        # 限制下载大小（100MB）
+        content_length = r.getheader('Content-Length')
+        if content_length and int(content_length) > 100 * 1024 * 1024:
+            raise Exception("文件过大（超过 100MB）")
+        
+        data = r.read()
+        if len(data) > 100 * 1024 * 1024:
+            raise Exception("文件过大（超过 100MB）")
+        
+        return data
 
 
 # ============ 执行节点 ============
@@ -94,38 +214,54 @@ class LLMChatGenerate:
     CATEGORY = "LLM"
 
     def run(self, config, prompt, system=""):
+        # 验证配置
+        if not _validate_config(config):
+            _log("Chat 错误: 配置参数缺失或无效")
+            return ("错误: 配置参数缺失或无效",)
+        
         api_base = config.get("api_base")
         api_key = config.get("api_key")
         model = config.get("model")
         temperature = config.get("temperature", 0.7)
         max_tokens = config.get("max_tokens", 2000)
         
-        base = _normalize_url(api_base)
-        _log(f"Chat start | base={base} | model={model} | key={_safe_key(api_key)}")
-        if not base or not api_key or not model:
-            _log("Chat error: missing base/key/model")
-            return ("Error: Missing parameters",)
+        # 验证并标准化 URL
+        try:
+            base = _normalize_url(api_base)
+        except ValueError as e:
+            _log(f"Chat 错误: URL 验证失败 - {e}")
+            return (f"错误: URL 验证失败",)
+        
+        # 清理用户输入
+        prompt = _sanitize_input(prompt, max_length=50000)
+        system = _sanitize_input(system, max_length=10000)
+        
+        _log(f"Chat 开始 | model={model} | key={_safe_key(api_key)}")
         
         msgs = []
-        if system.strip():
-            msgs.append({"role": "system", "content": system.strip()})
+        if system:
+            msgs.append({"role": "system", "content": system})
         msgs.append({"role": "user", "content": prompt})
         
         try:
+            # 验证参数范围
+            temperature = max(0.0, min(2.0, temperature))
+            max_tokens = max(1, min(128000, max_tokens))
+            
             payload = {
                 "model": model,
                 "messages": msgs,
                 "temperature": temperature,
                 "max_tokens": max_tokens
             }
-            _log(f"Chat request -> {base}/chat/completions | temp={temperature} max_tokens={max_tokens}")
+            _log(f"Chat 请求 -> {base}/chat/completions")
             res = _request("POST", f"{base}/chat/completions", _headers(api_key), payload)
             txt = res.get("choices", [{}])[0].get("message", {}).get("content", "")
-            _log(f"Chat done | output_len={len(txt)}")
-            return (txt or "No response",)
+            _log(f"Chat 完成 | 输出长度={len(txt)}")
+            return (txt or "无响应",)
         except Exception as e:
-            _log(f"Chat exception: {e}")
-            return (f"Error: {e}",)
+            _log(f"Chat 异常: {str(e)}")
+            return (f"错误: 请求失败",)
 
 
 class LLMImageGenerate:
@@ -147,6 +283,11 @@ class LLMImageGenerate:
     CATEGORY = "LLM"
 
     def run(self, config, prompt, n):
+        # 验证配置
+        if not _validate_config(config):
+            _log("Image 错误: 配置参数缺失或无效")
+            return (self._err(),)
+        
         api_base = config.get("api_base")
         api_key = config.get("api_key")
         model = config.get("model")
@@ -160,11 +301,20 @@ class LLMImageGenerate:
         aspect_ratio = config.get("aspect_ratio")
         image_size = config.get("image_size")
         
-        base = _normalize_url(api_base)
-        _log(f"Image start | base={base} | model={model} | key={_safe_key(api_key)}")
-        if not base or not api_key or not model:
-            _log("Image error: missing base/key/model")
+        # 验证并标准化 URL
+        try:
+            base = _normalize_url(api_base)
+        except ValueError as e:
+            _log(f"Image 错误: URL 验证失败 - {e}")
             return (self._err(),)
+        
+        # 清理用户输入
+        prompt = _sanitize_input(prompt, max_length=10000)
+        
+        # 验证参数
+        n = max(1, min(4, n))
+        
+        _log(f"Image 开始 | model={model} | key={_safe_key(api_key)}")
         
         try:
             if use_gemini_image and aspect_ratio and image_size:
@@ -180,20 +330,20 @@ class LLMImageGenerate:
                     }
                 }
                 
-                _log(f"Image request -> {base}/chat/completions | Gemini image_config")
+                _log(f"Image 请求 -> {base}/chat/completions | Gemini image_config")
                 res = _request("POST", f"{base}/chat/completions", _headers(api_key), payload, timeout=180)
                 
                 if "error" in res:
-                    raise Exception(res.get("error", {}).get("message", "image generation failed"))
+                    raise Exception("图片生成失败")
                 if not res.get("choices"):
-                    raise Exception(f"empty response: {res}")
+                    raise Exception("空响应")
                 
                 # 提取图片数据
                 imgs = []
                 message = res["choices"][0].get("message", {})
                 images = message.get("images", [])
                 
-                _log(f"Image response images_count={len(images)}")
+                _log(f"Image 响应图片数量={len(images)}")
                 
                 for img_item in images:
                     img_url = img_item.get("image_url", {}).get("url", "")
@@ -206,7 +356,7 @@ class LLMImageGenerate:
                         imgs.append(torch.from_numpy(arr))
                 
                 if imgs:
-                    _log(f"Image done | batch={len(imgs)} | shape={list(imgs[0].shape) if imgs else 'n/a'}")
+                    _log(f"Image 完成 | batch={len(imgs)}")
                     return (torch.stack(imgs),)
                     
             else:
@@ -220,14 +370,14 @@ class LLMImageGenerate:
                     "response_format": "b64_json"
                 }
                 
-                _log(f"Image request -> {base}/images/generations | model={model} size={size} n={n}")
+                _log(f"Image 请求 -> {base}/images/generations | model={model} size={size} n={n}")
                 
                 res = _request("POST", f"{base}/images/generations", _headers(api_key), payload, timeout=180)
             if "error" in res:
-                raise Exception(res.get("error", {}).get("message", "image generation failed"))
+                raise Exception("图片生成失败")
             if not res.get("data"):
-                raise Exception(f"empty response: {res}")
-            _log(f"Image response data_count={len(res.get('data', []))}")
+                raise Exception("空响应")
+            _log(f"Image 响应数据数量={len(res.get('data', []))}")
             
             imgs = []
             for item in res.get("data", []):
@@ -243,13 +393,13 @@ class LLMImageGenerate:
                     imgs.append(torch.from_numpy(arr))
             
             if imgs:
-                _log(f"Image done | batch={len(imgs)} | shape={list(imgs[0].shape) if imgs else 'n/a'}")
+                _log(f"Image 完成 | batch={len(imgs)}")
                 return (torch.stack(imgs),)
             
-            _log("Image error: no decoded images")
+            _log("Image 错误: 无法解码图片")
             return (self._err(),)
         except Exception as e:
-            _log(f"Image exception: {e}")
+            _log(f"Image 异常: {str(e)}")
             return (self._err(),)
     
     def _err(self):
@@ -277,9 +427,27 @@ class LLMBaseConfig:
     CATEGORY = "LLM/Config"
     
     def run(self, api_base, api_key, model):
+        # 验证并标准化 URL
+        try:
+            normalized_base = _normalize_url(api_base)
+        except ValueError as e:
+            _log(f"配置错误: {e}")
+            raise ValueError(f"无效的 API base URL: {e}")
+        
+        # 验证 API key
+        if not api_key or len(api_key.strip()) < 10:
+            _log("配置错误: API key 无效")
+            raise ValueError("API key 必须至少 10 个字符")
+        
+        # 验证 model
+        model = model.strip()
+        if not model or len(model) > 200:
+            _log("配置错误: model 名称无效")
+            raise ValueError("model 名称无效")
+        
         return ({
-            "api_base": _normalize_url(api_base),
-            "api_key": api_key,
+            "api_base": normalized_base,
+            "api_key": api_key.strip(),
             "model": model,
         },)
 
