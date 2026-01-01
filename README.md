@@ -201,7 +201,33 @@ Gemini 图片生成通过 LiteLLM 时使用 Chat Completions 端点，这是因�
 2. 传递 `image_config` 参数
 3. LiteLLM 版本 ≥ 1.80.7
 
+## 安全说明
+
+### API 密钥安全
+
+⚠️ **重要：** 请妥善保管您的 API 密钥，不要分享包含真实密钥的工作流文件。
+
+**推荐做法：**
+- 使用环境变量存储 API 密钥
+- 不要在截图中暴露完整的 API 密钥
+- 定期轮换 API 密钥
+- 不要将包含密钥的配置文件提交到版本控制系统
+
+详细的安全指南请参阅 [SECURITY.md](SECURITY.md)。
+
 ## 开发说明
+
+### 开发者配置
+
+为保护隐私，建议使用 GitHub 的 noreply 邮箱：
+
+```bash
+# 配置 Git 使用隐私邮箱
+git config user.email "your-username@users.noreply.github.com"
+
+# 或在 GitHub 设置中启用：
+# Settings → Emails → "Keep my email addresses private"
+```
 
 ### 依赖
 

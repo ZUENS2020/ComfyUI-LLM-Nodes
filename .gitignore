@@ -49,3 +49,15 @@ test_output/
 # Temporary files
 *.tmp
 temp/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*_secret.py
+*.secret.*
+secrets/
+
+# User-specific configurations
+test_config.py
+local_config.py
