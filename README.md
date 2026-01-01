@@ -52,6 +52,10 @@ Base Config → Chat Params → Chat
 
 ### 2. OpenAI 图片生成
 
+> **⚠️ 注意 / Note:**  
+> OpenAI 图片编辑功能（使用输入图像）的支持尚不完善，可能存在兼容性问题。建议优先使用 Gemini 的多模态功能。  
+> *OpenAI image editing support (with input images) is not fully tested and may have compatibility issues. We recommend using Gemini's multimodal features instead.*
+
 **工作流：**
 ```
 Base Config → OpenAI Image → Image
@@ -271,6 +275,18 @@ Gemini 图片生成通过 LiteLLM 时使用 Chat Completions 端点，这是因�
 2. 在 prompt 中描述你想要的修改
 3. （可选）在 additional_text 中添加额外说明
 4. 节点会自动构建多模态消息发送给 Gemini
+
+**注意：** OpenAI 的图像编辑功能（/images/edits）支持尚不完善，建议使用 Gemini。
+
+### Q: OpenAI 和 Gemini 的多模态有什么区别？
+
+**A:** 
+- **Gemini**: 使用 `/chat/completions` 端点，支持在单个消息中混合文本和图像，功能更强大且经过充分测试。
+- **OpenAI**: 使用 `/images/edits` 端点，需要 multipart/form-data 格式，仅支持 DALL-E-2 和 GPT 图像模型，**当前实现可能存在兼容性问题**。
+
+*Difference between OpenAI and Gemini multimodal:*
+- *Gemini: Uses `/chat/completions`, supports mixed text and images in a single message, fully tested.*
+- *OpenAI: Uses `/images/edits`, requires multipart/form-data format, only supports DALL-E-2 and GPT image models. **Current implementation may have compatibility issues.***
 
 ## 开发说明
 

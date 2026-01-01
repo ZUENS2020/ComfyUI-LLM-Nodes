@@ -240,16 +240,111 @@ class LLMImageGenerate:
                     
             else:
                 # OpenAI 标准图片生成
-                payload = {
-                    "model": model,
-                    "prompt": prompt,
-                    "n": n,
-                    "size": size,
-                    "quality": quality,
-                    "response_format": "b64_json"
-                }
-                
-                res = _request("POST", f"{base}/images/generations", _headers(api_key), payload, timeout=180)
+                if image is not None:
+                    # OpenAI 图片编辑模式（使用 /images/edits 端点）
+                    # 将 ComfyUI 的 IMAGE tensor 转换为 PNG 文件
+                    img_tensor = image[0] if len(image.shape) == 4 else image
+                    img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)
+                    pil_img = Image.fromarray(img_np)
+                    
+                    # 转换为 RGBA（OpenAI edits 要求）
+                    if pil_img.mode != 'RGBA':
+                        pil_img = pil_img.convert('RGBA')
+                    
+                    # 保存到 BytesIO
+                    img_buffer = BytesIO()
+                    pil_img.save(img_buffer, format='PNG')
+                    img_buffer.seek(0)
+                    
+                    # 构建完整的提示词
+                    full_prompt = prompt
+                    if additional_text.strip():
+                        full_prompt = f"{prompt}\n{additional_text}"
+                    
+                    # 使用 multipart/form-data 格式
+                    import random
+                    import string
+                    boundary = '----WebKitFormBoundary' + ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+                    
+                    # 构建 multipart body
+                    body_parts = []
+                    
+                    # 添加图片
+                    body_parts.append(f'--{boundary}'.encode())
+                    body_parts.append(b'Content-Disposition: form-data; name="image"; filename="image.png"')
+                    body_parts.append(b'Content-Type: image/png')
+                    body_parts.append(b'')
+                    body_parts.append(img_buffer.getvalue())
+                    
+                    # 添加 prompt
+                    body_parts.append(f'--{boundary}'.encode())
+                    body_parts.append(f'Content-Disposition: form-data; name="prompt"'.encode())
+                    body_parts.append(b'')
+                    body_parts.append(full_prompt.encode('utf-8'))
+                    
+                    # 添加 model
+                    body_parts.append(f'--{boundary}'.encode())
+                    body_parts.append(f'Content-Disposition: form-data; name="model"'.encode())
+                    body_parts.append(b'')
+                    body_parts.append(model.encode('utf-8'))
+                    
+                    # 添加 n
+                    body_parts.append(f'--{boundary}'.encode())
+                    body_parts.append(f'Content-Disposition: form-data; name="n"'.encode())
+                    body_parts.append(b'')
+                    body_parts.append(str(n).encode('utf-8'))
+                    
+                    # 添加 size
+                    body_parts.append(f'--{boundary}'.encode())
+                    body_parts.append(f'Content-Disposition: form-data; name="size"'.encode())
+                    body_parts.append(b'')
+                    body_parts.append(size.encode('utf-8'))
+                    
+                    # 添加 response_format
+                    body_parts.append(f'--{boundary}'.encode())
+                    body_parts.append(f'Content-Disposition: form-data; name="response_format"'.encode())
+                    body_parts.append(b'')
+                    body_parts.append(b'b64_json')
+                    
+                    body_parts.append(f'--{boundary}--'.encode())
+                    
+                    body = b'\r\n'.join(body_parts)
+                    
+                    # 发送请求
+                    headers = {
+                        "Authorization": f"Bearer {api_key.strip()}",
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        "User-Agent": "ComfyUI"
+                    }
+                    
+                    req = urllib.request.Request(f"{base}/images/edits", body, headers, method="POST")
+                    try:
+                        with urllib.request.urlopen(req, timeout=180) as r:
+                            res = json.loads(r.read().decode())
+                    except urllib.error.HTTPError as e:
+                        try:
+                            err = e.read().decode()
+                        except:
+                            err = str(e.reason)
+                        raise Exception(f"HTTP {e.code}: {err}")
+                    except Exception as e:
+                        raise Exception(str(e))
+                else:
+                    # OpenAI 标准图片生成（无输入图像）
+                    full_prompt = prompt
+                    if additional_text.strip():
+                        full_prompt = f"{prompt}\n{additional_text}"
+                    
+                    payload = {
+                        "model": model,
+                        "prompt": full_prompt,
+                        "n": n,
+                        "size": size,
+                        "quality": quality,
+                        "response_format": "b64_json"
+                    }
+                    
+                    res = _request("POST", f"{base}/images/generations", _headers(api_key), payload, timeout=180)
             if "error" in res:
                 raise Exception(res.get("error", {}).get("message", "image generation failed"))
             if not res.get("data"):
