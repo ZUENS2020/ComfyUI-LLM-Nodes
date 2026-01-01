@@ -136,14 +136,17 @@ class LLMImageGenerate:
                 "prompt": ("STRING", {"default": "A beautiful landscape", "multiline": True}),
                 "n": ("INT", {"default": 1, "min": 1, "max": 4}),
             },
-            "optional": {}
+            "optional": {
+                "image": ("IMAGE",),
+                "additional_text": ("STRING", {"default": "", "multiline": True}),
+            }
         }
     
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "run"
     CATEGORY = "LLM"
 
-    def run(self, config, prompt, n):
+    def run(self, config, prompt, n, image=None, additional_text=""):
         api_base = config.get("api_base")
         api_key = config.get("api_key")
         model = config.get("model")
@@ -166,9 +169,38 @@ class LLMImageGenerate:
         try:
             if use_gemini_image and aspect_ratio and image_size:
                 # Gemini 图片生成 (使用 chat/completions 端点)
+                # 构建多模态消息内容
+                content = []
+                
+                # 添加主提示词
+                if prompt.strip():
+                    content.append({"type": "text", "text": prompt})
+                
+                # 添加图像（如果有）
+                if image is not None:
+                    # 将 ComfyUI 的 IMAGE tensor 转换为 base64
+                    img_tensor = image[0] if len(image.shape) == 4 else image
+                    img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)
+                    pil_img = Image.fromarray(img_np)
+                    buffered = BytesIO()
+                    pil_img.save(buffered, format="PNG")
+                    img_b64 = base64.b64encode(buffered.getvalue()).decode()
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+                    })
+                
+                # 添加额外文本（如果有）
+                if additional_text.strip():
+                    content.append({"type": "text", "text": additional_text})
+                
+                # 如果没有任何内容，使用默认提示
+                if not content:
+                    content = "Generate an image"
+                
                 payload = {
                     "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": [{"role": "user", "content": content}],
                     "temperature": temperature,
                     "image_config": {
                         "image_size": image_size,
