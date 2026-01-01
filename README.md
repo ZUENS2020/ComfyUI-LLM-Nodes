@@ -70,7 +70,7 @@ Base Config → Gemini Image → Image
 ```
 
 **配置示例：**
-- api_base: `https://litellm.zuens2020.work/v1`
+- api_base: `https://your-litellm-server.com/v1`
 - model: `gemini/gemini-3-pro-image-preview`
 - aspect_ratio: `16:9`
 - image_size: `2K`
