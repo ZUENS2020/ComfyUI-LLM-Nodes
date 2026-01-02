@@ -7,7 +7,7 @@ Architecture:
 - Config Nodes: LLMBaseConfig, ChatParams, GeminiImageParams
 - Zero external dependencies (urllib only)
 
-Author: ComfyUI Community
+Author: ZUENS2020
 Version: 3.0.0
 Date: 2026-01-02
 """

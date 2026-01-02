@@ -1,6 +1,8 @@
 """
 ComfyUI Gemini LiteLLM Nodes
 仅支持通过 LiteLLM 的 Gemini（聊天 + 图片，多模态）
+
+GitHub: https://github.com/ZUENS2020/ComfyUI-Gemini-LiteLLM
 Version: 3.0.0
 """
 
